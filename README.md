@@ -48,7 +48,7 @@
 ## 4. 설치 방법
 
 ```bash
-git clone <저장소 주소>
+git clone https://github.com/kente39/Domestic-Travel.git
 cd Domestic-Travel
 
 python3 -m venv venv
@@ -137,6 +137,9 @@ $ python travel_planner.py --date "2026-03-15"
 - `results/2026-03-15_multi_raw_data.json`
 - `results/2026-03-15_multi_travel_plan.md`
 
+> `results/` 폴더는 실행 시 자동 생성되며 Git에는 커밋되지 않습니다.
+> 실제 출력 형태는 저장소의 **`sample_results/`** 폴더에 예시로 넣어두었습니다.
+
 원본 JSON 구조 예:
 ```json
 {
@@ -181,8 +184,11 @@ Domestic-Travel/
 ├── .env.example           # 환경변수 예시 (실제 키 없음)
 ├── .gitignore
 ├── README.md
-└── results/                # 실행 후 생성됨 (JSON + Markdown 리포트)
+├── sample_results/         # 예시 출력 (커밋됨, 참고용)
+└── results/                # 실행 후 자동 생성 (커밋 제외)
 ```
+
+> `.env.example` 파일이 저장소에 포함되어 있는지 확인하세요 (실제 키가 없는 예시 파일).
 
 ---
 
