@@ -121,6 +121,8 @@ def call_anthropic(api_key: str, system_prompt: str, user_prompt: str, max_token
     }
 
     try:
+        # LLM 응답 생성은 요청 본문(system/messages)을 서버로 보내 새 결과를
+        # 만들어내는 작업이므로 POST를 사용한다.(#10)
         resp = requests.post(
             ANTHROPIC_API_URL,
             headers=headers,
@@ -237,64 +239,134 @@ def get_final_report(api_key: str, date_str: str, recommendation: dict,
 
 
 # ----------------------------------------------------------------------------
-# 지도/장소 검색 API (Kakao Local)
+# 지도/장소 검색 API (어댑터 패턴)
 # ----------------------------------------------------------------------------
+# [#8] 지도 제공자를 교체하기 쉽도록 어댑터 인터페이스로 추상화한다.
+#      - PlaceSearchAdapter: 공통 인터페이스(추상)
+#      - KakaoLocalAdapter : Kakao Local 구현체
+#      다른 제공자(Naver 등)를 쓰려면 PlaceSearchAdapter를 상속한 새 클래스를
+#      만들어 search()만 구현하면 되고, 나머지 코드는 바꿀 필요가 없다.
+class PlaceSearchAdapter:
+    """지도/장소 검색 어댑터 공통 인터페이스."""
+
+    def search(self, city: str, errors: list, size: int = 5) -> list:
+        """도시명으로 맛집을 검색해 표준 형식의 리스트로 반환한다.
+        실패해도 예외를 던지지 않고, errors에 기록 후 빈 리스트를 반환한다."""
+        raise NotImplementedError
+
+
+def brand_key(place_name: str) -> str:
+    """
+    상호명에서 '브랜드'를 식별하는 키를 만든다.
+    같은 브랜드의 여러 지점/업태를 하나로 묶기 위해 첫 어절(브랜드명)을 사용한다.
+    예) "모모스커피 부산본점", "모모스 영도 로스터리&커피바" -> 둘 다 "모모스"
+        "스타벅스 강남점", "스타벅스 리저브" -> 둘 다 "스타벅스"
+    주의: 첫 어절이 너무 짧으면(1글자) 과도한 병합을 막기 위해 전체 이름을 키로 쓴다.
+    """
+    if not isinstance(place_name, str):
+        return ""
+    name = place_name.strip()
+    if not name:
+        return ""
+    # 첫 공백 앞부분을 브랜드 후보로 사용
+    first = re.split(r"\s+", name)[0]
+    # 브랜드명 뒤에 붙은 업태 단어 분리 (예: "모모스커피" -> "모모스")
+    first = re.sub(r"(커피|카페|베이커리|로스터리|제과|분식|식당)$", "", first)
+    # 특수문자 제거
+    first = re.sub(r"[\-_·.&]+", "", first)
+    # 첫 어절이 2글자 이상이면 그것을 키로, 아니면 전체 이름을 키로
+    if len(first) >= 2:
+        return first.lower()
+    return re.sub(r"\s+", "", name).lower()
+
+
+def dedupe_by_brand(restaurants: list) -> list:
+    """같은 브랜드는 첫 번째 지점 1곳만 남긴다(원래 순서 유지)."""
+    seen = set()
+    result = []
+    for r in restaurants:
+        key = brand_key(r.get("name", ""))
+        if key and key in seen:
+            continue
+        seen.add(key)
+        result.append(r)
+    return result
+
+
+class KakaoLocalAdapter(PlaceSearchAdapter):
+    """Kakao Local(키워드 검색) 구현체."""
+
+    def __init__(self, api_key: str):
+        self.api_key = api_key
+
+    def search(self, city: str, errors: list, size: int = 5) -> list:
+        # 검색은 서버 상태를 바꾸지 않고 결과만 조회하므로 GET을 사용한다.(#10)
+        # 브랜드 중복 제거 후에도 size개를 채울 수 있도록 여유분(최대 15개)을 받는다.
+        fetch_size = min(15, max(size * 3, size))
+        headers = {"Authorization": f"KakaoAK {self.api_key}"}
+        params = {"query": f"{city} 맛집", "size": fetch_size, "sort": "accuracy"}
+
+        try:
+            resp = requests.get(KAKAO_LOCAL_SEARCH_URL, headers=headers,
+                                 params=params, timeout=REQUEST_TIMEOUT)
+        except (requests.exceptions.RequestException, UnicodeEncodeError) as e:
+            # UnicodeEncodeError: 키에 한글 등 latin-1 불가 문자가 들어간 경우 방어
+            errors.append({"step": "place_search", "type": "NETWORK_ERROR", "message": str(e)})
+            return []
+
+        if resp.status_code in (401, 403):
+            errors.append({
+                "step": "place_search", "type": "AUTH_ERROR",
+                "message": f"HTTP {resp.status_code} - 키/권한/카카오맵 사용설정을 확인하세요.",
+            })
+            return []
+        if resp.status_code == 429:
+            errors.append({"step": "place_search", "type": "QUOTA_ERROR", "message": "HTTP 429 - 쿼터 초과"})
+            return []
+        if resp.status_code >= 400:
+            errors.append({
+                "step": "place_search", "type": "API_ERROR",
+                "message": f"HTTP {resp.status_code} - {resp.text[:200]}",
+            })
+            return []
+
+        try:
+            data = resp.json()
+        except ValueError as e:
+            errors.append({"step": "place_search", "type": "PARSE_ERROR", "message": str(e)})
+            return []
+
+        documents = data.get("documents", [])
+        if not documents:
+            errors.append({
+                "step": "place_search", "type": "EMPTY_RESULT",
+                "message": f"0 results for query='{city} 맛집'",
+            })
+            return []
+
+        restaurants = []
+        for doc in documents:
+            restaurants.append({
+                "name": doc.get("place_name", ""),
+                "address": doc.get("road_address_name") or doc.get("address_name", ""),
+                "category": doc.get("category_name", ""),
+                "url": doc.get("place_url", ""),
+                "x": doc.get("x", ""),  # 경도(longitude)
+                "y": doc.get("y", ""),  # 위도(latitude)
+            })
+
+        # 같은 브랜드(상호)의 여러 지점이 결과를 잠식하지 않도록 브랜드당 1곳만 남긴다.
+        restaurants = dedupe_by_brand(restaurants)
+        return restaurants[:size]
+
+
 def search_restaurants(kakao_key: str, city: str, errors: list, size: int = 5) -> list:
     """
-    [2/3] Kakao Local API(키워드 검색)로 도시 기준 맛집을 검색한다.
-    실패해도 프로그램은 중단하지 않고, 빈 리스트 + errors 기록으로 다음 단계로 진행한다.
+    [2/3] 맛집 검색 진입점(하위 호환용 얇은 래퍼).
+    내부적으로 KakaoLocalAdapter를 사용한다. 제공자를 바꾸려면 아래 어댑터만 교체하면 된다.
     """
-    headers = {"Authorization": f"KakaoAK {kakao_key}"}
-    params = {"query": f"{city} 맛집", "size": size, "sort": "accuracy"}
-
-    try:
-        resp = requests.get(KAKAO_LOCAL_SEARCH_URL, headers=headers,
-                             params=params, timeout=REQUEST_TIMEOUT)
-    except requests.exceptions.RequestException as e:
-        errors.append({"step": "place_search", "type": "NETWORK_ERROR", "message": str(e)})
-        return []
-
-    if resp.status_code in (401, 403):
-        errors.append({
-            "step": "place_search", "type": "AUTH_ERROR",
-            "message": f"HTTP {resp.status_code} - 키/권한/도메인 설정을 확인하세요.",
-        })
-        return []
-    if resp.status_code == 429:
-        errors.append({"step": "place_search", "type": "QUOTA_ERROR", "message": "HTTP 429 - 쿼터 초과"})
-        return []
-    if resp.status_code >= 400:
-        errors.append({
-            "step": "place_search", "type": "API_ERROR",
-            "message": f"HTTP {resp.status_code} - {resp.text[:200]}",
-        })
-        return []
-
-    try:
-        data = resp.json()
-    except ValueError as e:
-        errors.append({"step": "place_search", "type": "PARSE_ERROR", "message": str(e)})
-        return []
-
-    documents = data.get("documents", [])
-    if not documents:
-        errors.append({
-            "step": "place_search", "type": "EMPTY_RESULT",
-            "message": f"0 results for query='{city} 맛집'",
-        })
-        return []
-
-    restaurants = []
-    for doc in documents:
-        restaurants.append({
-            "name": doc.get("place_name", ""),
-            "address": doc.get("road_address_name") or doc.get("address_name", ""),
-            "category": doc.get("category_name", ""),
-            "url": doc.get("place_url", ""),
-            "x": doc.get("x", ""),  # 경도(longitude)
-            "y": doc.get("y", ""),  # 위도(latitude)
-        })
-    return restaurants
+    adapter = KakaoLocalAdapter(kakao_key)
+    return adapter.search(city, errors, size)
 
 
 # ----------------------------------------------------------------------------
@@ -344,12 +416,39 @@ def load_cached_raw_data(raw_path: Path):
     return cached
 
 
+def normalize_city(name: str) -> str:
+    """
+    [#17] 추천 도시명을 장소 검색에 쓰기 좋게 정규화한다.
+    - 앞뒤 공백 제거
+    - 괄호와 그 안의 부연 설명 제거  예) "제주(제주도)" -> "제주"
+    - 쉼표 이후 제거                예) "강릉, 강원도" -> "강릉"
+    - "특별시/광역시/특별자치시/특별자치도" 접미사 정리 예) "서울특별시" -> "서울"
+    """
+    if not isinstance(name, str):
+        return ""
+    name = name.strip()
+    name = re.sub(r"[\(（].*?[\)）]", "", name)   # 괄호 부연 제거
+    name = name.split(",")[0].split("，")[0]        # 쉼표 이후 제거
+    name = re.sub(r"(특별자치시|특별자치도|특별시|광역시)$", "", name.strip())
+    return name.strip()
+
+
 def get_cities_from_recommendation(recommendation: dict, multi: bool) -> list:
     if multi:
-        cities = recommendation.get("recommended_cities") or []
-        return [c for c in cities if c]
-    city = recommendation.get("recommended_city")
-    return [city] if city else []
+        raw_cities = recommendation.get("recommended_cities") or []
+    else:
+        city = recommendation.get("recommended_city")
+        raw_cities = [city] if city else []
+
+    # 정규화 + 빈값 제거 + 중복 제거(순서 유지)
+    seen = set()
+    cities = []
+    for c in raw_cities:
+        norm = normalize_city(c)
+        if norm and norm not in seen:
+            seen.add(norm)
+            cities.append(norm)
+    return cities
 
 
 def run(date_str: str, multi: bool, use_cache: bool) -> None:

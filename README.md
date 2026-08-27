@@ -1,106 +1,110 @@
-# 국내 여행지 추천 프로그램
+# Domestic Travel Recommendation Program
 
-LLM API(Anthropic Claude)와 지도/장소 검색 API(Kakao Local)를 조합한 CLI 기반 국내 여행 추천 프로그램입니다.
+사용자가 입력한 날짜를 기준으로 국내 여행지를 추천하고,
+해당 지역의 맛집 정보를 수집한 뒤 여행 리포트를 생성하는 Python CLI 프로그램입니다.
 
-여행 날짜를 입력하면 다음 순서로 동작합니다.
-
-1. **[1/3] LLM API** — 입력한 날짜를 기준으로 여행하기 좋은 국내 지역을 추천하고, 날씨/행사 정보를 JSON으로 생성
-2. **[2/3] 지도/장소 검색 API (Kakao Local)** — 추천된 지역의 맛집을 검색
-3. **[3/3] LLM API** — 1차 추천 결과 + 맛집 목록을 종합해 최종 여행 리포트(Markdown)를 생성
+- Anthropic Claude API로 여행지 추천 및 리포트 생성
+- Kakao Local API로 지역별 맛집 검색
+- Markdown 리포트 자동 생성
+- JSON 캐시 저장 및 재사용
 
 ---
 
-## 1. 프로그램 개요
+## 1. 주요 기능
+
+- 날짜 입력 검증 (`YYYY-MM-DD`) + 실제 존재하는 날짜인지 추가 검증
+- 국내 여행지 추천 (단일 / 복수 지역)
+- 추천 지역별 맛집 검색
+- 여행 리포트 Markdown 생성 + 원본 데이터 JSON 저장
+- 캐시 재사용 및 `--no-cache` 지원
+
+---
+
+## 2. 동작 흐름
+
+1. **[1/3] LLM API (Claude)** — 입력 날짜 기준 여행지 추천, 날씨/행사 정보를 JSON으로 생성
+2. **[2/3] Kakao Local API** — 추천 지역의 맛집 검색
+3. **[3/3] LLM API (Claude)** — 1차 추천 + 맛집 목록을 종합해 최종 Markdown 리포트 생성
 
 | 구성 요소 | 사용 API |
 |---|---|
-| 여행지 추천 / 최종 리포트 생성 (LLM) | Anthropic Claude API (`/v1/messages`) |
+| 여행지 추천 / 리포트 생성 | Anthropic Claude API (`/v1/messages`) |
 | 맛집(장소) 검색 | Kakao Local API (`/v2/local/search/keyword.json`) |
 
-- 두 API 모두 표준 REST 방식(HTTP GET/POST + JSON)으로 직접 호출합니다.
-- LLM의 1차 추천 결과(JSON)를 그대로 다음 단계인 장소 검색의 입력(`recommended_city`)으로 사용합니다.
-- 장소 검색이 실패하거나 결과가 0건이어도 프로그램은 멈추지 않고, "데이터 없음"으로 표시한 뒤 리포트 생성까지 계속 진행합니다.
+- 두 API 모두 표준 REST(HTTP + JSON)로 직접 호출합니다.
+- **HTTP 메서드 선택 기준(#10):** LLM 응답 생성은 요청 본문을 서버로 보내 새 결과를 만들어내므로 **POST**, 맛집 검색은 서버 상태를 바꾸지 않고 결과만 조회하므로 **GET**을 사용합니다.
+- 장소 검색이 실패하거나 0건이어도 멈추지 않고 "데이터 없음"으로 리포트를 계속 생성합니다.
 
-## 2. 사전 준비
+---
 
-### 2-1. Python 환경
+## 3. 사용 기술
 
-- Python 3.10 이상 필요
+- Python 3.10 이상
+- Anthropic Claude API
+- Kakao Local API
+- `requests`, `python-dotenv`
+
+---
+
+## 4. 설치 방법
 
 ```bash
-cd travel_planner
+git clone https://github.com/kente39/Domestic-Travel.git
+cd Domestic-Travel
+
 python3 -m venv venv
 source venv/bin/activate      # Windows: venv\Scripts\activate
+
 pip install -r requirements.txt
 ```
 
-### 2-2. API 키 발급
+---
 
-**Anthropic Claude API 키**
-1. https://console.anthropic.com/settings/keys 접속 후 로그인
-2. "Create Key"로 API 키 발급 (크레딧이 남아있는 계정 사용)
+## 5. 환경변수 설정 (보안 주의)
 
-**Kakao REST API 키**
-1. https://developers.kakao.com 접속 후 로그인
-2. [내 애플리케이션] → 애플리케이션 추가
-3. [앱 키] 메뉴에서 **REST API 키** 복사
-   (Kakao Local API는 별도 활성화 없이 REST API 키만으로 사용 가능합니다)
+**⚠️ API 키를 코드에 직접 작성하지 마세요.** `.env` 파일 또는 환경변수에서만 키를 읽어옵니다.
 
-> 다른 지도 API(Naver Local Search 등)를 사용하고 싶다면 `travel_planner.py`의
-> `search_restaurants()` 함수 내부 요청 부분만 해당 API 스펙에 맞게 교체하면 됩니다.
+프로젝트 루트에 `.env` 파일을 생성하고 아래 내용을 입력합니다.
 
-## 3. API 키 설정 방법 (보안 주의)
-
-**⚠️ API 키를 코드에 직접 작성하지 마세요.** 이 프로그램은 `.env` 파일 또는 환경변수에서만 키를 읽어옵니다.
-
-### 방법 A. `.env` 파일 사용 (권장)
-
-```bash
-cp .env.example .env
-```
-
-`.env` 파일을 열어 아래처럼 실제 키 값을 채워 넣습니다.
-
-```
+```env
 ANTHROPIC_API_KEY=발급받은_실제_키
 KAKAO_REST_API_KEY=발급받은_실제_키
 ```
 
-- `.env`는 `.gitignore`에 이미 포함되어 있어 Git 저장소에 커밋되지 않습니다.
-- **`.env` 파일과 그 안의 키 값은 절대 제출물(README, 로그, 결과 파일 등)에 포함하지 마세요.**
+- `.env`는 `.gitignore`에 포함되어 Git에 커밋되지 않습니다.
+- **키 값은 절대 제출물(README, 로그, 결과 파일, 스크린샷)에 포함하지 마세요.**
 
-### 방법 B. 환경변수 직접 설정
+### Anthropic Claude API 키
+1. https://console.anthropic.com/settings/keys 접속 후 로그인
+2. "Create Key"로 발급 (크레딧 남은 계정 사용)
 
-macOS / Linux (현재 터미널 세션에만 적용):
+### Kakao REST API 키
+1. https://developers.kakao.com 접속 후 로그인
+2. [내 애플리케이션] → 애플리케이션 추가
+3. [앱 키] 메뉴에서 **REST API 키** 복사
+4. **카카오맵 사용 설정을 ON으로 활성화**
+
+> 참고: Kakao Local API 호출이 `403 Forbidden`이면 해당 앱의 **카카오맵 사용 설정이 ON인지** 먼저 확인하세요.
+
+### (참고) GitHub Codespaces 사용 시
+`.env` 대신 저장소 **Settings → Secrets and variables → Codespaces**에
+`ANTHROPIC_API_KEY`, `KAKAO_REST_API_KEY`를 등록하면 Codespace 실행 시 자동 주입됩니다.
+(등록 후 Codespace 재시작 필요)
+
+---
+
+## 6. 실행 방법
+
 ```bash
-export ANTHROPIC_API_KEY="YOUR_KEY"
-export KAKAO_REST_API_KEY="YOUR_KEY"
-```
-
-Windows PowerShell (현재 세션에만 적용):
-```powershell
-$env:ANTHROPIC_API_KEY="YOUR_KEY"
-$env:KAKAO_REST_API_KEY="YOUR_KEY"
-```
-
-### 왜 이렇게 관리해야 하나요?
-- 협업/공유(Git, 캡처, 채팅 등) 중 실수로 키가 노출되는 사고를 막기 위해서입니다.
-- 키를 교체해도 코드를 수정할 필요가 없어 운영/배포에 유리합니다.
-- 과금·쿼터가 걸린 서비스에서 키 유출로 인한 비용 사고를 예방합니다.
-
-## 4. 실행 방법
-
-```bash
+# 단일 지역 추천
 python travel_planner.py --date "2026-03-15"
+
+# 복수 지역 추천 (보너스)
+python travel_planner.py --date "2026-03-15" --multi
+
+# 캐시 무시 후 새로 호출 (보너스)
+python travel_planner.py --date "2026-03-15" --no-cache
 ```
-
-### 옵션
-
-| 옵션 | 필수 | 설명 |
-|---|---|---|
-| `--date "YYYY-MM-DD"` | ✅ | 여행 날짜. 형식이 틀리면 사용법을 출력하고 종료합니다. |
-| `--multi` | ❌ | [보너스] 여행지를 1곳이 아닌 2~3곳으로 확장 추천 |
-| `--no-cache` | ❌ | [보너스] 같은 날짜로 재실행 시에도 캐시를 쓰지 않고 API를 새로 호출 |
 
 ### 실행 예시
 
@@ -113,20 +117,31 @@ $ python travel_planner.py --date "2026-03-15"
 [3/3] 최종 리포트 생성 중(LLM)...
     - 리포트 생성 완료
 
-완료! results/2026-03-15_travel_plan.md 를 확인하세요.
-(원본 데이터: results/2026-03-15_raw_data.json)
+완료! results/2026-03-15_single_travel_plan.md 를 확인하세요.
+(원본 데이터: results/2026-03-15_single_raw_data.json)
 ```
 
-같은 날짜로 다시 실행하면(기본값), 이미 저장된 원본 JSON이 있을 경우 LLM/지도 API 호출을 건너뛰고 리포트만 재생성합니다. 새로 호출하고 싶다면 `--no-cache`를 붙이세요.
+같은 날짜로 다시 실행하면 저장된 원본 JSON을 재사용해 API 호출 없이 리포트만 재생성합니다.
+새로 호출하려면 `--no-cache`를 붙이세요.
 
-## 5. 결과물 확인 방법
+---
 
-실행이 끝나면 `results/` 폴더에 아래 두 파일이 생성됩니다. (파일명은 입력한 날짜 기준)
+## 7. 실행 결과
 
-- `results/{date}_single_raw_data.json (또는 _multi_)` — 1차 추천 JSON + 맛집 검색 결과 + 오류 요약(`errors`)이 담긴 원본 데이터
-- `results/{date}_single_travel_plan.md (또는 _multi_)` — 추천 지역 / 추천 이유 / 날씨 / 행사·축제 / 맛집 리스트 / 1일 일정 / 오류 요약이 포함된 최종 Markdown 리포트
+실행 후 `results/` 폴더에 파일이 생성됩니다.
 
-`results/{date}_single_raw_data.json (또는 _multi_)` 구조 예:
+### 단일 지역
+- `results/2026-03-15_single_raw_data.json`
+- `results/2026-03-15_single_travel_plan.md`
+
+### 복수 지역
+- `results/2026-03-15_multi_raw_data.json`
+- `results/2026-03-15_multi_travel_plan.md`
+
+> `results/` 폴더는 실행 시 자동 생성되며 Git에는 커밋되지 않습니다.
+> 실제 출력 형태는 저장소의 **`sample_results/`** 폴더에 예시로 넣어두었습니다.
+
+원본 JSON 구조 예:
 ```json
 {
   "date": "2026-03-15",
@@ -136,31 +151,51 @@ $ python travel_planner.py --date "2026-03-15"
 }
 ```
 
-## 6. 오류 처리 정책
+---
+
+## 8. 오류 / 예외 처리
 
 | 상황 | 동작 |
 |---|---|
-| `ANTHROPIC_API_KEY` / `KAKAO_REST_API_KEY` 미설정 | 즉시 종료 + 설정 방법 안내 출력 |
-| 날짜 형식 오류 | 즉시 종료 + 사용법 출력 |
-| 지도/장소 API 실패 (네트워크/401·403 인증/429 쿼터 등) | 맛집 섹션을 "데이터 없음"으로 처리하고 리포트 생성까지 계속 진행 |
-| 장소 검색 결과 0건 | 중단하지 않고 "데이터 없음"으로 다음 단계 진행 |
-| LLM 1차 추천 JSON 파싱 실패 | 축소된 프롬프트로 1회 재시도, 그래도 실패하면 기본값으로 대체 후 진행 |
+| API 키 미설정 | 즉시 종료 + 설정 방법 안내 |
+| 날짜 형식/존재하지 않는 날짜 | 즉시 종료 + 사용법 출력 |
+| 지도 API 실패 (네트워크/401·403/429) | 맛집 "데이터 없음" 처리 후 리포트 계속 생성 |
+| 장소 검색 0건 | 중단 없이 "데이터 없음"으로 진행 |
+| LLM JSON 파싱 실패 | 축소 프롬프트로 1회 재시도, 실패 시 기본값 대체 |
+| 손상된 캐시 JSON | 캐시 무시하고 새로 API 호출 |
 
-모든 오류는 원본 JSON의 `errors` 배열과 최종 리포트의 "오류 요약" 섹션에 기록됩니다.
+모든 오류는 원본 JSON의 `errors` 배열과 리포트의 "오류 요약" 섹션에 기록됩니다.
 
-## 7. 프로젝트 구조
+---
 
-```
-travel_planner/
+## 9. 트러블슈팅
+
+- `403 Forbidden` (Kakao) → 카카오맵 사용 설정 **ON** 확인
+- `API key not found` → `.env` 또는 환경변수 설정 확인
+- 날짜 입력 오류 → `YYYY-MM-DD` 형식으로 입력
+
+---
+
+## 10. 프로젝트 구조
+
+```text
+Domestic-Travel/
 ├── travel_planner.py    # 메인 프로그램
-├── requirements.txt      # 의존 패키지
+├── requirements.txt      # 의존 패키지 (requests, python-dotenv)
 ├── .env.example           # 환경변수 예시 (실제 키 없음)
 ├── .gitignore
 ├── README.md
-└── results/                # 실행 후 생성됨 (JSON + Markdown 리포트)
+├── sample_results/         # 예시 출력 (커밋됨, 참고용)
+└── results/                # 실행 후 자동 생성 (커밋 제외)
 ```
 
-## 8. 보너스 구현 여부
+> `.env.example` 파일이 저장소에 포함되어 있는지 확인하세요 (실제 키가 없는 예시 파일).
 
-- ✅ **복수 지역 추천**: `--multi` 옵션으로 `recommended_cities`를 2~3개 받아 지역별 맛집 검색 및 리포트 섹션 구성
-- ✅ **결과 캐싱**: 같은 `--date`로 재실행 시 저장된 원본 JSON이 있으면 API 재호출 없이 리포트만 재생성 (`--no-cache`로 무시 가능)
+---
+
+## 11. 보너스 구현 사항
+
+- ✅ 복수 지역 추천 (`--multi`)
+- ✅ 결과 캐싱 및 캐시 무시 옵션 (`--no-cache`)
+- ✅ 손상된 캐시 JSON 예외 처리
+- ✅ 환경변수 기반 API 키 관리
