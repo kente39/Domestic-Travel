@@ -48,7 +48,7 @@ DEFAULT_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-5")
 KAKAO_LOCAL_SEARCH_URL = "https://dapi.kakao.com/v2/local/search/keyword.json"
 
 RESULTS_DIR = Path("results")
-REQUEST_TIMEOUT = 20  # seconds
+REQUEST_TIMEOUT = 60  # seconds
 
 
 # ----------------------------------------------------------------------------
